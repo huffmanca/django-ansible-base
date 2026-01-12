@@ -453,3 +453,230 @@ def add_x_ai_description(result: dict, generator: Any, request: Any, public: Opt
                 _process_operation(operation, method, path)
 
     return result
+
+
+def inject_oauth_endpoints(result: dict, generator: Any, request: Any, public: Optional[bool]) -> dict:
+    """
+    Inject OAuth 2.0 endpoint schemas into OpenAPI spec.
+
+    OAuth endpoints (/o/authorize/, /o/token/, /o/revoke_token/) use Django views
+    via django-oauth-toolkit and don't auto-generate schemas. This hook manually
+    adds their documentation per RFC 6749 (OAuth 2.0) and RFC 7009 (Token Revocation).
+    """
+    # Common values for OAuth endpoints
+    oauth_scopes = {'read': 'Read access to resources', 'write': 'Write access to resources (includes read)'}
+    auth_tag = ['Authentication']
+    no_auth = []
+
+    # Added for SonarQube compliance
+    token_url = '/o/token/'
+    oauth_content_type = 'application/x-www-form-urlencoded'
+
+    # Only inject if the root 'paths' key exists in the schema.
+    if 'paths' not in result:
+        return result
+
+    # Update OAuth2_Authentication security scheme to use oauth2 type
+    if 'components' in result and 'securitySchemes' in result['components']:
+        if 'OAuth2_Authentication' in result['components']['securitySchemes']:
+            result['components']['securitySchemes']['OAuth2_Authentication'] = {
+                'type': 'oauth2',
+                'description': 'OAuth 2.0 authentication with supported grant types: authorization_code and password',
+                'flows': {
+                    'authorizationCode': {
+                        'authorizationUrl': '/o/authorize/',
+                        'tokenUrl': token_url,
+                        'scopes': oauth_scopes,
+                    },
+                    'password': {
+                        'tokenUrl': token_url,
+                        'scopes': oauth_scopes,
+                    },
+                },
+            }
+
+    # /o/authorize/ - OAuth 2.0 Authorization Endpoint
+    result['paths']['/o/authorize/'] = {
+        'get': {
+            'operationId': 'oauth2_authorize_retrieve',
+            'description': (
+                'OAuth 2.0 authorization endpoint for browser-based flows. '
+                'Returns an HTML form for user consent. '
+                'For programmatic access, use /api/gateway/v1/tokens/ to create Personal Access Tokens instead.'
+            ),
+            'x-ai-description': 'Browser-only OAuth authorization form. Not usable programmatically. Use /api/gateway/v1/tokens/ for API access instead.',
+            'parameters': [
+                {'name': 'client_id', 'in': 'query', 'required': True, 'schema': {'type': 'string'}, 'description': 'OAuth application client ID'},
+                {
+                    'name': 'response_type',
+                    'in': 'query',
+                    'required': True,
+                    'schema': {'type': 'string', 'enum': ['code', 'token']},
+                    'description': 'OAuth response type',
+                },
+                {
+                    'name': 'redirect_uri',
+                    'in': 'query',
+                    'required': True,
+                    'schema': {'type': 'string', 'format': 'uri'},
+                    'description': 'Redirect URL after authorization',
+                },
+                {'name': 'scope', 'in': 'query', 'required': False, 'schema': {'type': 'string'}, 'description': 'Space-separated scopes (read write)'},
+                {'name': 'state', 'in': 'query', 'required': False, 'schema': {'type': 'string'}, 'description': 'CSRF protection state'},
+            ],
+            'tags': auth_tag,
+            'security': no_auth,
+            'responses': {
+                '200': {
+                    'description': 'HTML authorization form',
+                    'content': {'text/html': {'schema': {'type': 'string'}}},
+                },
+                '302': {
+                    'description': 'Redirect after authorization',
+                },
+            },
+        },
+        'post': {
+            'operationId': 'oauth2_authorize_create',
+            'description': 'Process OAuth 2.0 authorization decision (user clicked Allow/Deny)',
+            'x-ai-description': 'Browser-only OAuth authorization submission. Not usable programmatically. Requires user interaction.',
+            'requestBody': {
+                'content': {
+                    oauth_content_type: {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'client_id': {'type': 'string'},
+                                'redirect_uri': {'type': 'string', 'format': 'uri'},
+                                'response_type': {'type': 'string'},
+                                'scope': {'type': 'string'},
+                                'state': {'type': 'string'},
+                                'allow': {'type': 'string', 'description': 'User consent (on/off)'},
+                            },
+                            'required': ['client_id', 'redirect_uri', 'response_type'],
+                        },
+                    },
+                },
+            },
+            'tags': auth_tag,
+            'security': no_auth,
+            'responses': {
+                '302': {
+                    'description': 'Redirect to redirect_uri with authorization code or error',
+                },
+            },
+        },
+    }
+
+    # /o/token/ - OAuth 2.0 Token Endpoint
+    result['paths'][token_url] = {
+        'post': {
+            'operationId': 'oauth2_token_create',
+            'description': (
+                'OAuth 2.0 token endpoint for programmatic token creation and refresh. Supports authorization_code, password, and refresh_token grant types.'
+            ),
+            'x-ai-description': (
+                'Exchange OAuth credentials or refresh token for access token. Use refresh_token grant to renew expired tokens programmatically.'
+            ),
+            'requestBody': {
+                'content': {
+                    oauth_content_type: {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'grant_type': {
+                                    'type': 'string',
+                                    'enum': ['authorization_code', 'password', 'refresh_token'],
+                                    'description': 'OAuth grant type',
+                                },
+                                'client_id': {'type': 'string', 'description': 'OAuth application client ID'},
+                                'client_secret': {'type': 'string', 'description': 'OAuth application secret'},
+                                'code': {'type': 'string', 'description': 'Authorization code (for authorization_code grant)'},
+                                'redirect_uri': {'type': 'string', 'format': 'uri', 'description': 'Redirect URI (for authorization_code grant)'},
+                                'username': {'type': 'string', 'description': 'Username (for password grant)'},
+                                'password': {'type': 'string', 'description': 'Password (for password grant)'},
+                                'refresh_token': {'type': 'string', 'description': 'Refresh token (for refresh_token grant)'},
+                                'scope': {'type': 'string', 'description': 'Space-separated scopes (read write)'},
+                            },
+                            'required': ['grant_type'],
+                        },
+                    },
+                },
+            },
+            'tags': auth_tag,
+            'security': no_auth,  # OAuth protocol endpoint - accepts client/user credentials, not API auth tokens
+            'responses': {
+                '201': {
+                    'description': 'Token created successfully',
+                    'content': {
+                        'application/json': {
+                            'schema': {
+                                'type': 'object',
+                                'properties': {
+                                    'access_token': {'type': 'string', 'description': 'OAuth access token'},
+                                    'token_type': {'type': 'string', 'enum': ['Bearer'], 'description': 'Token type'},
+                                    'expires_in': {'type': 'integer', 'description': 'Seconds until expiration'},
+                                    'refresh_token': {'type': 'string', 'description': 'Refresh token (if applicable)'},
+                                    'scope': {'type': 'string', 'description': 'Granted scopes'},
+                                },
+                                'required': ['access_token', 'token_type', 'expires_in'],
+                            },
+                        },
+                    },
+                },
+                '400': {
+                    'description': 'Invalid request',
+                    'content': {
+                        'application/json': {
+                            'schema': {
+                                'type': 'object',
+                                'properties': {
+                                    'error': {'type': 'string', 'description': 'OAuth error code'},
+                                    'error_description': {'type': 'string', 'description': 'Human-readable error'},
+                                },
+                            },
+                        },
+                    },
+                },
+                '403': {
+                    'description': 'Access denied or token expired',
+                },
+            },
+        },
+    }
+
+    # /o/revoke_token/ - OAuth 2.0 Token Revocation
+    result['paths']['/o/revoke_token/'] = {
+        'post': {
+            'operationId': 'oauth2_revoke_token_create',
+            'description': 'OAuth 2.0 token revocation endpoint. Revokes access or refresh tokens.',
+            'x-ai-description': 'Revoke an OAuth access or refresh token to invalidate it immediately. Use for cleanup or security purposes.',
+            'requestBody': {
+                'content': {
+                    oauth_content_type: {
+                        'schema': {
+                            'type': 'object',
+                            'properties': {
+                                'token': {'type': 'string', 'description': 'Access or refresh token to revoke'},
+                                'token_type_hint': {
+                                    'type': 'string',
+                                    'enum': ['access_token', 'refresh_token'],
+                                    'description': 'Hint about token type (optional)',
+                                },
+                            },
+                            'required': ['token'],
+                        },
+                    },
+                },
+            },
+            'tags': auth_tag,
+            'security': no_auth,
+            'responses': {
+                '200': {
+                    'description': 'Token revoked successfully (empty response)',
+                },
+            },
+        },
+    }
+
+    return result

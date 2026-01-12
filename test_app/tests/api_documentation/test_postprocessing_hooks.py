@@ -16,6 +16,7 @@ from ansible_base.api_documentation.postprocessing_hooks import (
     generate_crud_description,
     generate_custom_action_description,
     generate_description_from_purpose,
+    inject_oauth_endpoints,
     singularize_resource_purpose,
 )
 from ansible_base.api_documentation.preprocessing_hooks import OPERATION_CLASS_MAP, RESOURCE_PURPOSE_MAP, SKIP_AI_DESCRIPTION_PREFIXES
@@ -745,3 +746,65 @@ class TestHelperFunctions:
         operation = {}
         result = generate_custom_action_description('Custom', 'teams', operation)
         assert result == 'Custom teams'
+
+
+class TestInjectOAuthEndpoints:
+    """Test the inject_oauth_endpoints postprocessing hook."""
+
+    def test_empty_schema(self):
+        """Test that empty schema returns empty schema."""
+        result = {}
+        modified = inject_oauth_endpoints(result, None, None, None)
+        assert modified == {}
+
+    def test_injects_oauth_endpoints(self):
+        """Test that all three OAuth endpoints are injected."""
+        result = {'paths': {}}
+        inject_oauth_endpoints(result, None, None, None)
+
+        assert '/o/authorize/' in result['paths']
+        assert '/o/token/' in result['paths']
+        assert '/o/revoke_token/' in result['paths']
+
+        # Verify authorize has GET and POST
+        assert 'get' in result['paths']['/o/authorize/']
+        assert 'post' in result['paths']['/o/authorize/']
+
+        # Verify token and revoke_token have POST
+        assert 'post' in result['paths']['/o/token/']
+        assert 'post' in result['paths']['/o/revoke_token/']
+
+    def test_updates_security_scheme(self):
+        """Test that OAuth2_Authentication security scheme is updated."""
+        result = {
+            'paths': {},
+            'components': {
+                'securitySchemes': {
+                    'OAuth2_Authentication': {
+                        'type': 'apiKey',
+                        'in': 'header',
+                        'name': 'Authorization',
+                    }
+                }
+            },
+        }
+
+        inject_oauth_endpoints(result, None, None, None)
+
+        # Verify security scheme updated to oauth2 type
+        assert result['components']['securitySchemes']['OAuth2_Authentication']['type'] == 'oauth2'
+        assert 'flows' in result['components']['securitySchemes']['OAuth2_Authentication']
+        assert 'authorizationCode' in result['components']['securitySchemes']['OAuth2_Authentication']['flows']
+        assert 'password' in result['components']['securitySchemes']['OAuth2_Authentication']['flows']
+
+    def test_safe_without_oauth2_authentication(self):
+        """Test that hook doesn't crash when OAuth2_Authentication doesn't exist."""
+        result = {'paths': {}, 'components': {'securitySchemes': {}}}
+
+        # Should not raise any errors
+        inject_oauth_endpoints(result, None, None, None)
+
+        # Should still inject OAuth endpoints
+        assert '/o/authorize/' in result['paths']
+        assert '/o/token/' in result['paths']
+        assert '/o/revoke_token/' in result['paths']

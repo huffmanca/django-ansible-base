@@ -21,6 +21,7 @@ DEFAULT_SPECTACULAR_SETTINGS = {
         'ansible_base.api_documentation.preprocessing_hooks.collect_ai_description_metadata',
     ],
     'POSTPROCESSING_HOOKS': [
+        'ansible_base.api_documentation.postprocessing_hooks.inject_oauth_endpoints',
         'ansible_base.api_documentation.postprocessing_hooks.add_x_ai_description',
     ],
 }
